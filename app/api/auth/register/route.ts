@@ -20,6 +20,9 @@ export async function POST(request: Request) {
 		const password = String(body.password || "");
 		const selectedPlan = (body.planType as PlanType | undefined) ?? "FREE";
 		const schoolName = String(body.schoolName || "").trim();
+		const inviteCode = String(body.inviteCode || "")
+			.trim()
+			.toUpperCase();
 
 		if (!name || !email || !password) {
 			return NextResponse.json(
@@ -40,7 +43,7 @@ export async function POST(request: Request) {
 			return NextResponse.json({ error: "Plano invalido" }, { status: 400 });
 		}
 
-		if (selectedPlan === "ESCOLAR" && !schoolName) {
+		if (selectedPlan === "ESCOLAR" && !schoolName && !inviteCode) {
 			return NextResponse.json(
 				{ error: "Informe o nome da escola para o plano escolar" },
 				{ status: 400 },
@@ -59,17 +62,66 @@ export async function POST(request: Request) {
 		}
 
 		let schoolId: number | null = null;
-		if (selectedPlan === "ESCOLAR") {
+		let role: "ADMIN" | "PROFESSOR" | "ALUNO" = "PROFESSOR";
+
+		if (inviteCode) {
+			const invites = (await sql`
+        SELECT id, school_id, target_role, active, expires_at, uses_count, max_uses
+        FROM school_invites
+        WHERE code = ${inviteCode}
+        LIMIT 1
+      `) as Array<{
+				id: number;
+				school_id: number;
+				target_role: "PROFESSOR" | "ALUNO" | "ADMIN";
+				active: boolean;
+				expires_at: string | null;
+				uses_count: number;
+				max_uses: number;
+			}>;
+
+			const invite = invites[0];
+			if (!invite || !invite.active) {
+				return NextResponse.json(
+					{ error: "Codigo de convite invalido" },
+					{ status: 400 },
+				);
+			}
+
+			if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+				return NextResponse.json(
+					{ error: "Convite expirado" },
+					{ status: 400 },
+				);
+			}
+
+			if (invite.uses_count >= invite.max_uses) {
+				return NextResponse.json(
+					{ error: "Convite sem usos restantes" },
+					{ status: 400 },
+				);
+			}
+
+			schoolId = invite.school_id;
+			role = invite.target_role === "PROFESSOR" ? "PROFESSOR" : "ALUNO";
+
+			await sql`
+        UPDATE school_invites
+        SET uses_count = uses_count + 1,
+            active = CASE WHEN uses_count + 1 >= max_uses THEN FALSE ELSE active END
+        WHERE id = ${invite.id}
+      `;
+		} else if (selectedPlan === "ESCOLAR") {
 			const createdSchool = (await sql`
         INSERT INTO schools (name, plan_type, plan_price)
         VALUES (${schoolName}, ${selectedPlan}, ${PLAN_PRICES[selectedPlan]})
         RETURNING id
 			`) as Array<{ id: number }>;
 			schoolId = createdSchool[0].id;
+			role = "ADMIN";
 		}
 
 		const passwordHash = await bcrypt.hash(password, 10);
-		const role = selectedPlan === "ESCOLAR" ? "ADMIN" : "ALUNO";
 
 		const createdUsers = (await sql`
       INSERT INTO users (email, password_hash, name, role, school_id, plan_type, plan_price)

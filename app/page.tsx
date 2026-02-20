@@ -21,6 +21,9 @@ export default function Home() {
 						<Button asChild>
 							<Link href="/login">Entrar ou criar conta</Link>
 						</Button>
+						<Button asChild variant="outline">
+							<Link href="/game">Ir para o jogo</Link>
+						</Button>
 					</div>
 				</div>
 

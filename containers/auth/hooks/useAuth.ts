@@ -49,6 +49,7 @@ export function useAuth() {
 			password: string;
 			planType: "FREE" | "INDIVIDUAL" | "ESCOLAR";
 			schoolName?: string;
+			inviteCode?: string;
 		}) => {
 			const res = await fetch("/api/auth/register", {
 				method: "POST",

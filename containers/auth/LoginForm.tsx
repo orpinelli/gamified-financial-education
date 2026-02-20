@@ -30,6 +30,7 @@ export function LoginForm() {
 	const registerEmailId = useId();
 	const registerPasswordId = useId();
 	const registerSchoolId = useId();
+	const registerInviteId = useId();
 
 	const [activeTab, setActiveTab] = useState<"login" | "register">("login");
 	const [email, setEmail] = useState("");
@@ -37,6 +38,7 @@ export function LoginForm() {
 	const [registerName, setRegisterName] = useState("");
 	const [registerEmail, setRegisterEmail] = useState("");
 	const [registerPassword, setRegisterPassword] = useState("");
+	const [registerInviteCode, setRegisterInviteCode] = useState("");
 	const [registerPlan, setRegisterPlan] = useState<
 		"FREE" | "INDIVIDUAL" | "ESCOLAR"
 	>("FREE");
@@ -53,14 +55,8 @@ export function LoginForm() {
 		setIsSubmitting(true);
 
 		try {
-			const user = await login(email, password);
-			if (user.role === "ADMIN") {
-				router.push("/dashboard");
-			} else if (user.role === "PROFESSOR") {
-				router.push("/dashboard");
-			} else {
-				router.push("/dashboard");
-			}
+			await login(email, password);
+			router.push("/home");
 		} catch (err: unknown) {
 			const message =
 				err instanceof Error ? err.message : "Erro ao fazer login";
@@ -76,19 +72,15 @@ export function LoginForm() {
 		setIsSubmitting(true);
 
 		try {
-			const user = await register({
+			await register({
 				name: registerName,
 				email: registerEmail,
 				password: registerPassword,
 				planType: registerPlan,
 				schoolName: registerPlan === "ESCOLAR" ? schoolName : undefined,
+				inviteCode: registerInviteCode.trim() || undefined,
 			});
-
-			if (user.role === "ADMIN") {
-				router.push("/dashboard");
-			} else {
-				router.push("/dashboard");
-			}
+			router.push("/home");
 		} catch (err: unknown) {
 			const message =
 				err instanceof Error ? err.message : "Erro ao criar conta";
@@ -242,6 +234,20 @@ export function LoginForm() {
 										onChange={(e) => setRegisterPassword(e.target.value)}
 										placeholder="Mínimo 6 caracteres"
 										required
+									/>
+								</div>
+
+								<div className="flex flex-col gap-2">
+									<Label htmlFor={registerInviteId}>
+										Código de convite da escola (opcional)
+									</Label>
+									<Input
+										id={registerInviteId}
+										value={registerInviteCode}
+										onChange={(e) =>
+											setRegisterInviteCode(e.target.value.toUpperCase())
+										}
+										placeholder="EX: AB12CD"
 									/>
 								</div>
 

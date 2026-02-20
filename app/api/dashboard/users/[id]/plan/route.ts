@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { verifyToken } from "@/lib/auth";
 import { sql } from "@/lib/db";
+import { isSuperAdminEmail } from "@/lib/super-admin";
 import type { PlanType } from "@/types/user";
 
 const PLAN_PRICES: Record<PlanType, number> = {
@@ -24,7 +25,7 @@ export async function PATCH(request: Request, context: RouteContext) {
 		}
 
 		const payload = await verifyToken(token);
-		if (!payload || payload.role !== "ADMIN") {
+		if (!payload || !isSuperAdminEmail(payload.email)) {
 			return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
 		}
 

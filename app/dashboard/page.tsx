@@ -54,6 +54,13 @@ type OverviewResponse = {
 export default function DashboardPage() {
 	const router = useRouter();
 	const { user, isLoading, logout } = useAuth();
+	const publicSuperAdmins = (process.env.NEXT_PUBLIC_SUPER_ADMIN_EMAILS ?? "")
+		.split(",")
+		.map((email) => email.trim().toLowerCase())
+		.filter(Boolean);
+	const isSuperAdmin = user
+		? publicSuperAdmins.includes(user.email.toLowerCase())
+		: false;
 	const [overview, setOverview] = useState<OverviewResponse | null>(null);
 	const [loadingOverview, setLoadingOverview] = useState(true);
 	const [message, setMessage] = useState<string>("");
@@ -70,6 +77,7 @@ export default function DashboardPage() {
 		}
 
 		if (user.role !== "ADMIN") {
+			router.push("/home");
 			setLoadingOverview(false);
 			return;
 		}
@@ -106,6 +114,11 @@ export default function DashboardPage() {
 	if (!user) return null;
 
 	async function handleUpdatePlan(targetUserId: number) {
+		if (!isSuperAdmin) {
+			setMessage("Apenas SUPER ADMIN pode alterar plano.");
+			return;
+		}
+
 		const selectedPlan = planDrafts[targetUserId];
 		if (!selectedPlan) {
 			return;
@@ -168,22 +181,7 @@ export default function DashboardPage() {
 					</div>
 				) : null}
 
-				{user.role !== "ADMIN" ? (
-					<Card>
-						<CardHeader>
-							<CardTitle>Visão do usuário</CardTitle>
-						</CardHeader>
-						<CardContent>
-							<p className="text-sm text-muted-foreground">
-								Seu acesso não é administrativo. Seu plano atual é{" "}
-								{user.planType}
-								{user.schoolId
-									? " e sua conta está vinculada a uma escola."
-									: " e sua conta não está vinculada a escola."}
-							</p>
-						</CardContent>
-					</Card>
-				) : (
+				{
 					<>
 						<div className="grid gap-4 md:grid-cols-3">
 							<Card>
@@ -286,7 +284,9 @@ export default function DashboardPage() {
 											<TableHead>Email</TableHead>
 											<TableHead>Perfil</TableHead>
 											<TableHead>Plano atual</TableHead>
-											<TableHead>Alterar plano</TableHead>
+											{isSuperAdmin ? (
+												<TableHead>Alterar plano</TableHead>
+											) : null}
 											<TableHead>Escola</TableHead>
 										</TableRow>
 									</TableHeader>
@@ -299,35 +299,39 @@ export default function DashboardPage() {
 												<TableCell>
 													{u.plan_type} (R$ {Number(u.plan_price).toFixed(2)})
 												</TableCell>
-												<TableCell>
-													<div className="flex items-center gap-2">
-														<select
-															value={planDrafts[u.id] ?? u.plan_type}
-															onChange={(event) =>
-																setPlanDrafts((current) => ({
-																	...current,
-																	[u.id]: event.target.value as
-																		| "FREE"
-																		| "INDIVIDUAL"
-																		| "ESCOLAR",
-																}))
-															}
-															className="rounded border border-border bg-background px-2 py-1 text-sm"
-														>
-															<option value="FREE">FREE</option>
-															<option value="INDIVIDUAL">INDIVIDUAL</option>
-															<option value="ESCOLAR">ESCOLAR</option>
-														</select>
-														<Button
-															size="sm"
-															variant="outline"
-															onClick={() => handleUpdatePlan(u.id)}
-															disabled={savingUserId === u.id}
-														>
-															{savingUserId === u.id ? "Salvando..." : "Salvar"}
-														</Button>
-													</div>
-												</TableCell>
+												{isSuperAdmin ? (
+													<TableCell>
+														<div className="flex items-center gap-2">
+															<select
+																value={planDrafts[u.id] ?? u.plan_type}
+																onChange={(event) =>
+																	setPlanDrafts((current) => ({
+																		...current,
+																		[u.id]: event.target.value as
+																			| "FREE"
+																			| "INDIVIDUAL"
+																			| "ESCOLAR",
+																	}))
+																}
+																className="rounded border border-border bg-background px-2 py-1 text-sm"
+															>
+																<option value="FREE">FREE</option>
+																<option value="INDIVIDUAL">INDIVIDUAL</option>
+																<option value="ESCOLAR">ESCOLAR</option>
+															</select>
+															<Button
+																size="sm"
+																variant="outline"
+																onClick={() => handleUpdatePlan(u.id)}
+																disabled={savingUserId === u.id}
+															>
+																{savingUserId === u.id
+																	? "Salvando..."
+																	: "Salvar"}
+															</Button>
+														</div>
+													</TableCell>
+												) : null}
 												<TableCell>{u.school_name ?? "Sem escola"}</TableCell>
 											</TableRow>
 										))}
@@ -336,7 +340,7 @@ export default function DashboardPage() {
 							</CardContent>
 						</Card>
 					</>
-				)}
+				}
 			</div>
 		</main>
 	);

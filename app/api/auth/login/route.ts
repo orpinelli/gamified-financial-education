@@ -3,6 +3,32 @@ import bcrypt from "bcryptjs";
 import { sql } from "@/lib/db";
 import { createToken } from "@/lib/auth";
 
+async function normalizeRole(
+	userId: number,
+	role: "ADMIN" | "PROFESSOR" | "ALUNO",
+	schoolId: number | null,
+): Promise<"ADMIN" | "PROFESSOR" | "ALUNO"> {
+	if (role !== "ALUNO") {
+		return role;
+	}
+
+	if (!schoolId) {
+		return "PROFESSOR";
+	}
+
+	const memberships = (await sql`
+    SELECT COUNT(*)::int AS total
+    FROM classroom_students
+    WHERE user_id = ${userId}
+  `) as Array<{ total: number }>;
+
+	if ((memberships[0]?.total ?? 0) === 0) {
+		return "PROFESSOR";
+	}
+
+	return role;
+}
+
 export async function POST(request: Request) {
 	try {
 		const { email, password } = await request.json();
@@ -37,11 +63,17 @@ export async function POST(request: Request) {
 			);
 		}
 
+		const normalizedRole = await normalizeRole(
+			user.id,
+			user.role,
+			user.school_id,
+		);
+
 		const token = await createToken({
 			id: user.id,
 			email: user.email,
 			name: user.name,
-			role: user.role,
+			role: normalizedRole,
 			schoolId: user.school_id,
 			planType: user.plan_type,
 		});
@@ -51,7 +83,7 @@ export async function POST(request: Request) {
 				id: user.id,
 				email: user.email,
 				name: user.name,
-				role: user.role,
+				role: normalizedRole,
 				schoolId: user.school_id,
 				planType: user.plan_type,
 			},

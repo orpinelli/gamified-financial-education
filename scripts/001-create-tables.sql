@@ -32,12 +32,14 @@ CREATE TABLE IF NOT EXISTS users (
   email VARCHAR(255) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
-  role user_role NOT NULL DEFAULT 'ALUNO',
+  role user_role NOT NULL DEFAULT 'PROFESSOR',
   school_id INTEGER REFERENCES schools(id) ON DELETE SET NULL,
   plan_type plan_type NOT NULL DEFAULT 'FREE',
   plan_price NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE users ALTER COLUMN role SET DEFAULT 'PROFESSOR';
 
 ALTER TABLE schools ADD COLUMN IF NOT EXISTS plan_type plan_type NOT NULL DEFAULT 'ESCOLAR';
 ALTER TABLE schools ADD COLUMN IF NOT EXISTS plan_price NUMERIC(10, 2) NOT NULL DEFAULT 399.00;
@@ -72,6 +74,30 @@ CREATE TABLE IF NOT EXISTS classroom_students (
   classroom_id INTEGER NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (classroom_id, user_id)
+);
+
+-- School invites
+CREATE TABLE IF NOT EXISTS school_invites (
+  id SERIAL PRIMARY KEY,
+  school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+  code VARCHAR(16) NOT NULL UNIQUE,
+  target_role user_role NOT NULL DEFAULT 'ALUNO',
+  created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMP WITH TIME ZONE,
+  max_uses INTEGER NOT NULL DEFAULT 25,
+  uses_count INTEGER NOT NULL DEFAULT 0,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Lesson progress placeholder for future aulas
+CREATE TABLE IF NOT EXISTS lesson_progress (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  module_id VARCHAR(100) NOT NULL,
+  lesson_id VARCHAR(100) NOT NULL,
+  completed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE (user_id, module_id, lesson_id)
 );
 
 -- Game sessions table
@@ -111,3 +137,6 @@ CREATE INDEX IF NOT EXISTS idx_game_sessions_user ON game_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_game_day_logs_session ON game_day_logs(game_session_id);
 CREATE INDEX IF NOT EXISTS idx_classroom_students_user ON classroom_students(user_id);
 CREATE INDEX IF NOT EXISTS idx_classroom_teachers_user ON classroom_teachers(user_id);
+CREATE INDEX IF NOT EXISTS idx_school_invites_school ON school_invites(school_id);
+CREATE INDEX IF NOT EXISTS idx_school_invites_code ON school_invites(code);
+CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON lesson_progress(user_id);
