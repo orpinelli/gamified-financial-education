@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { GameState, Profession } from "@/src/shared/types/domain";
-import { INITIAL_PROFESSIONS } from "@/src/features/game/data/professions";
+import type { GameCard } from "@/src/features/game/components/CardReveal";
 
-interface GameSessionResponse {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type GameStatus = "ACTIVE" | "COMPLETED";
+
+export interface GameSession {
 	id: number;
 	user_id: number;
 	character_name: string;
@@ -14,316 +17,97 @@ interface GameSessionResponse {
 	knowledge: number;
 	happiness: number;
 	energy: number;
-	status: "ACTIVE" | "COMPLETED";
+	health: number;
+	credit_score: number;
+	impulse_score: number;
+	lifestyle_level: number;
+	avatar_hair: string;
+	avatar_skin: string;
+	avatar_outfit: string;
+	tutorial_shown: boolean;
+	pending_deferred_card_id: number | null;
+	monthly_choices: Record<string, string> | null;
+	status: GameStatus;
 }
+
+export interface DayLog {
+	day: number;
+	event_type: string;
+	card_id: number | null;
+	roulette_result: number | null;
+	choice_index: number | null;
+	// category joined from game_cards (may be absent in older logs)
+	category?: string | null;
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 interface UseGameEngineParams {
 	userId: number;
 }
 
-export interface GameDayLog {
-	day: number;
-	event_type: string;
-	event_title: string;
-	choice_made: string;
-}
-
-export type MorningAction = "TRABALHAR" | "LAZER" | "FALTAR" | "ESTUDAR";
-export type EveningAction = "ESTUDAR" | "LAZER" | "DORMIR";
-
-export interface DailyRoutinePlan {
-	morningAction: MorningAction;
-	eveningAction: EveningAction;
-	takeOvertime: boolean;
-	journeyEnergyDelta: number;
-	journeyHappinessDelta: number;
-	journeyStressGain: boolean;
-	journeyStory: string;
-	dayStory: string;
-}
-
-export interface DailyRoutineOutcome {
-	overtimeApplied: boolean;
-	motivationFactor: number;
-	nextStressDays: number;
-	dayStory: string;
-}
-
-export interface DiceRoll {
-	values: number[];
-	total: number;
-}
-
-interface ParsedChoiceMeta {
-	hasLazer: boolean;
-	stressGain: boolean;
-}
-
-function getProfessionById(professionId: string): Profession {
-	const found = INITIAL_PROFESSIONS.find(
-		(profession) => profession.id === professionId,
-	);
-	return found ?? INITIAL_PROFESSIONS[0];
-}
-
-function toGameState(session: GameSessionResponse): GameState {
-	return {
-		userId: session.user_id,
-		day: Number(session.current_day),
-		money: Number(session.money),
-		knowledge: Number(session.knowledge),
-		happiness: Number(session.happiness),
-		energy: Number(session.energy),
-		profession: getProfessionById(session.profession_id),
-	};
-}
-
-function clampFactor(value: number): number {
-	if (value < 0.45) return 0.45;
-	if (value > 1) return 1;
-	return value;
-}
-
-function getMotivationFactor(state: GameState): number {
-	const dayPenalty = Math.min(0.4, state.day * 0.004);
-	const happinessPenalty =
-		state.happiness < 35 ? 0.3 : state.happiness < 55 ? 0.16 : 0;
-
-	return clampFactor(1 - dayPenalty - happinessPenalty);
-}
-
-function parseChoiceMeta(choiceMade: string): ParsedChoiceMeta {
-	const normalized = choiceMade.toUpperCase();
-	const hasLazer =
-		normalized.includes("MANHA:LAZER") ||
-		normalized.includes("NOITE:LAZER") ||
-		normalized.includes("HAS_LAZER:1");
-	const stressGain =
-		normalized.includes("STRESS_GAIN:1") || normalized.includes("STRESS:SIM");
-
-	return { hasLazer, stressGain };
-}
-
-function computeStressDaysFromLogs(logs: GameDayLog[]): number {
-	let stressDays = 0;
-
-	for (const log of logs) {
-		stressDays = Math.max(0, stressDays - 1);
-		const meta = parseChoiceMeta(log.choice_made);
-
-		if (meta.hasLazer) {
-			stressDays = 0;
-		}
-
-		if (meta.stressGain && !meta.hasLazer) {
-			stressDays = 3;
-		}
-	}
-
-	return stressDays;
-}
-
-function resolveEventType(plan: DailyRoutinePlan): string {
-	if (plan.morningAction === "TRABALHAR" || plan.takeOvertime) {
-		return "TRABALHO_ROTINA";
-	}
-
-	if (plan.morningAction === "ESTUDAR" || plan.eveningAction === "ESTUDAR") {
-		return "ESTUDO_ROTINA";
-	}
-
-	if (plan.morningAction === "LAZER" || plan.eveningAction === "LAZER") {
-		return "LAZER_ROTINA";
-	}
-
-	return "ROTINA_DIARIA";
-}
-
-function resolveEffects(
-	state: GameState,
-	plan: DailyRoutinePlan,
-	overtimeAvailable: boolean,
-	stressDaysRemaining: number,
-): {
-	effects: Record<string, number>;
-	motivationFactor: number;
-	effectiveFactor: number;
-	overtimeApplied: boolean;
-} {
-	const motivationFactor = getMotivationFactor(state);
-	const stressPenaltyFactor = stressDaysRemaining > 0 ? 0.5 : 1;
-	const effectiveFactor = motivationFactor * stressPenaltyFactor;
-	const effects: Record<string, number> = {
-		happiness: -2,
-		energy: -3,
-	};
-
-	if (plan.morningAction === "TRABALHAR") {
-		effects.money = (effects.money ?? 0) + state.profession.baseSalary * 0.08;
-		effects.energy = (effects.energy ?? 0) - 12;
-		effects.happiness = (effects.happiness ?? 0) - 4;
-	}
-
-	if (plan.morningAction === "LAZER") {
-		effects.money = (effects.money ?? 0) - 20;
-		effects.happiness = (effects.happiness ?? 0) + 10;
-		effects.energy = (effects.energy ?? 0) + 4;
-	}
-
-	if (plan.morningAction === "FALTAR") {
-		effects.money = (effects.money ?? 0) - 65;
-		effects.happiness = (effects.happiness ?? 0) + 6;
-		effects.energy = (effects.energy ?? 0) + 7;
-	}
-
-	if (plan.morningAction === "ESTUDAR") {
-		effects.knowledge =
-			(effects.knowledge ?? 0) + Math.round(10 * effectiveFactor);
-		effects.energy = (effects.energy ?? 0) - 9;
-		effects.happiness = (effects.happiness ?? 0) - 3;
-	}
-
-	const overtimeApplied =
-		overtimeAvailable &&
-		plan.morningAction === "TRABALHAR" &&
-		plan.takeOvertime;
-
-	if (overtimeApplied) {
-		effects.money = (effects.money ?? 0) + Math.round(65 * effectiveFactor);
-		effects.energy = (effects.energy ?? 0) - 11;
-		effects.happiness = (effects.happiness ?? 0) - 5;
-	}
-
-	if (plan.eveningAction === "ESTUDAR") {
-		effects.knowledge =
-			(effects.knowledge ?? 0) + Math.round(8 * effectiveFactor);
-		effects.energy = (effects.energy ?? 0) - 7;
-		effects.happiness = (effects.happiness ?? 0) - 2;
-	}
-
-	if (plan.eveningAction === "LAZER") {
-		effects.money = (effects.money ?? 0) - 25;
-		effects.happiness = (effects.happiness ?? 0) + 12;
-		effects.energy = (effects.energy ?? 0) + 6;
-	}
-
-	if (plan.eveningAction === "DORMIR") {
-		effects.energy = (effects.energy ?? 0) + 14;
-		effects.happiness = (effects.happiness ?? 0) + 2;
-	}
-
-	effects.energy = (effects.energy ?? 0) + plan.journeyEnergyDelta;
-	effects.happiness = (effects.happiness ?? 0) + plan.journeyHappinessDelta;
-
-	return {
-		effects,
-		motivationFactor,
-		effectiveFactor,
-		overtimeApplied,
-	};
-}
-
-function randomOvertimeChance(): boolean {
-	return Math.random() < 0.45;
-}
-
 export function useGameEngine({ userId }: UseGameEngineParams) {
-	const [session, setSession] = useState<GameSessionResponse | null>(null);
-	const [playerName, setPlayerName] = useState("Jogador");
+	const [session, setSession] = useState<GameSession | null>(null);
+	const [logs, setLogs] = useState<DayLog[]>([]);
+	const [cards, setCards] = useState<GameCard[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [isSubmitting, setIsSubmitting] = useState(false);
-	const [error, setError] = useState<string>("");
-	const [gameOver, setGameOver] = useState(false);
-	const [overtimeAvailable, setOvertimeAvailable] = useState(false);
-	const [stressDaysRemaining, setStressDaysRemaining] = useState(0);
-	const [logs, setLogs] = useState<GameDayLog[]>([]);
+	const [error, setError] = useState("");
 
-	const gameState = useMemo(
-		() => (session ? toGameState(session) : null),
-		[session],
-	);
+	// Derived
+	const hasActiveSession = Boolean(session);
+	const gameOver = session?.status === "COMPLETED";
 
-	const header = useMemo(() => {
-		if (!gameState) {
-			return {
-				playerName,
-				professionName: "",
-				currentDay: 0,
-				money: 0,
-			};
-		}
+	// Happiness-based tint class
+	const happinessTint = useMemo(() => {
+		const h = session?.happiness ?? 70;
+		if (h < 40) return "bg-gray-100/40";
+		if (h < 70) return "bg-yellow-50/20";
+		return "";
+	}, [session?.happiness]);
 
-		return {
-			playerName,
-			professionName: gameState.profession.name,
-			currentDay: gameState.day,
-			money: gameState.money,
-		};
-	}, [gameState, playerName]);
+	// Avatar face
+	const avatarFace = useMemo(() => {
+		const h = session?.happiness ?? 70;
+		if (h >= 70) return "😄";
+		if (h >= 40) return "😐";
+		return "😞";
+	}, [session?.happiness]);
 
-	const motivation = useMemo(() => {
-		if (!gameState) {
-			return { factor: 1, discouragement: 0 };
-		}
-
-		const factor = getMotivationFactor(gameState);
-		return {
-			factor,
-			discouragement: Math.round((1 - factor) * 100),
-		};
-	}, [gameState]);
-
+	// ── Load session ──────────────────────────────────────────────────────────
 	const refreshSession = useCallback(async () => {
 		setIsLoading(true);
 		setError("");
-
 		try {
-			const response = await fetch("/api/game/session");
-			const data = (await response.json()) as {
+			const res = await fetch("/api/game/session");
+			const data = (await res.json()) as {
 				error?: string;
-				session?: GameSessionResponse | null;
-				logs?: Array<{
-					day: number;
-					event_type: string;
-					event_title: string;
-					choice_made?: string;
-				}>;
+				session?: GameSession | null;
+				logs?: DayLog[];
 			};
-
-			if (!response.ok) {
-				setError(data.error ?? "Nao foi possivel carregar a sessao.");
+			if (!res.ok) {
+				setError(data.error ?? "Erro ao carregar sessão.");
 				setSession(null);
-				setOvertimeAvailable(false);
-				setStressDaysRemaining(0);
 				setLogs([]);
 				return;
 			}
-
-			if (!data.session) {
-				setSession(null);
-				setOvertimeAvailable(false);
-				setStressDaysRemaining(0);
-				setLogs([]);
-				return;
-			}
-
-			setSession(data.session);
-			setPlayerName(data.session.character_name);
-			setGameOver(data.session.status === "COMPLETED");
-			setOvertimeAvailable(randomOvertimeChance());
-			const mappedLogs: GameDayLog[] = (data.logs ?? []).map((log) => ({
-				day: Number(log.day),
-				event_type: log.event_type,
-				event_title: log.event_title,
-				choice_made: log.choice_made ?? "",
-			}));
-
-			setLogs(mappedLogs);
-			setStressDaysRemaining(computeStressDaysFromLogs(mappedLogs));
+			setSession(data.session ?? null);
+			setLogs(data.logs ?? []);
 		} catch {
-			setError("Erro de rede ao carregar a sessao.");
+			setError("Erro de rede.");
 		} finally {
 			setIsLoading(false);
+		}
+	}, []);
+
+	// ── Load cards (only once) ─────────────────────────────────────────────────
+	const loadCards = useCallback(async () => {
+		try {
+			const res = await fetch("/api/game/cards");
+			const data = (await res.json()) as { cards?: GameCard[] };
+			if (res.ok && data.cards) setCards(data.cards);
+		} catch {
+			// silent — cards optional
 		}
 	}, []);
 
@@ -332,41 +116,39 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 			setIsLoading(false);
 			return;
 		}
-
 		void refreshSession();
-	}, [refreshSession, userId]);
+		void loadCards();
+	}, [loadCards, refreshSession, userId]);
 
+	// ── Start new game ────────────────────────────────────────────────────────
 	const startNewGame = useCallback(
-		async (characterName: string, professionId: string) => {
+		async (params: {
+			characterName: string;
+			avatarHair: string;
+			avatarSkin: string;
+			avatarOutfit: string;
+		}) => {
 			setIsSubmitting(true);
 			setError("");
-
 			try {
-				const response = await fetch("/api/game/session", {
+				const res = await fetch("/api/game/session", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ characterName, professionId }),
+					body: JSON.stringify(params),
 				});
-
-				const data = (await response.json()) as {
+				const data = (await res.json()) as {
 					error?: string;
-					session?: GameSessionResponse;
+					session?: GameSession;
 				};
-
-				if (!response.ok || !data.session) {
-					setError(data.error ?? "Nao foi possivel iniciar o jogo.");
+				if (!res.ok || !data.session) {
+					setError(data.error ?? "Erro ao iniciar jogo.");
 					return false;
 				}
-
 				setSession(data.session);
-				setPlayerName(characterName);
-				setGameOver(false);
-				setOvertimeAvailable(randomOvertimeChance());
-				setStressDaysRemaining(0);
 				setLogs([]);
 				return true;
 			} catch {
-				setError("Erro de rede ao iniciar jogo.");
+				setError("Erro de rede.");
 				return false;
 			} finally {
 				setIsSubmitting(false);
@@ -375,115 +157,139 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 		[],
 	);
 
-	const playDailyRoutine = useCallback(
-		async (plan: DailyRoutinePlan): Promise<DailyRoutineOutcome | null> => {
-			if (!session) {
-				return null;
+	// ── Update session settings (lifestyle/budget/tutorial) ───────────────────
+	const patchSession = useCallback(
+		async (patch: {
+			lifestyleLevel?: number;
+			budgetIncomeExpected?: number;
+			budgetFixedExpenses?: number;
+			budgetEmergencyReserve?: number;
+			budgetSavingsGoal?: number;
+			tutorialShown?: boolean;
+			monthlyChoices?: Record<string, string>;
+		}) => {
+			if (!session) return;
+			try {
+				const res = await fetch("/api/game/session", {
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ sessionId: session.id, ...patch }),
+				});
+				const data = (await res.json()) as { session?: GameSession };
+				if (res.ok && data.session) setSession(data.session);
+			} catch {
+				// silent
 			}
+		},
+		[session],
+	);
 
-			const currentState = toGameState(session);
-			const resolved = resolveEffects(
-				currentState,
-				plan,
-				overtimeAvailable,
-				stressDaysRemaining,
-			);
-			const eventType = resolveEventType(plan);
-			const hasLazer =
-				plan.morningAction === "LAZER" || plan.eveningAction === "LAZER";
-			let nextStressDays = Math.max(0, stressDaysRemaining - 1);
-
-			if (hasLazer) {
-				nextStressDays = 0;
-			} else if (plan.journeyStressGain) {
-				nextStressDays = 3;
-			}
-
-			const choiceMade = [
-				`Manha:${plan.morningAction}`,
-				`Extra:${plan.takeOvertime ? "SIM" : "NAO"}`,
-				`Noite:${plan.eveningAction}`,
-				`StressGain:${plan.journeyStressGain ? "1" : "0"}`,
-				`HasLazer:${hasLazer ? "1" : "0"}`,
-			].join("|");
-
+	// ── Advance turn ──────────────────────────────────────────────────────────
+	const advanceTurn = useCallback(
+		async (params: {
+			rouletteResult: number;
+			cardId?: number | null;
+			choiceIndex?: number | null;
+		}): Promise<{
+			session: GameSession;
+			gameOver: boolean;
+			monthStart: boolean;
+			newMonth: number | null;
+		} | null> => {
+			if (!session) return null;
 			setIsSubmitting(true);
 			setError("");
-
 			try {
-				const response = await fetch("/api/game/advance", {
+				const res = await fetch("/api/game/advance", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						sessionId: session.id,
-						eventType,
-						eventTitle: plan.dayStory || "Rotina diaria",
-						choiceMade,
-						diceResult: null,
-						effects: resolved.effects,
-					}),
+					body: JSON.stringify({ sessionId: session.id, ...params }),
 				});
-
-				const data = (await response.json()) as {
+				const data = (await res.json()) as {
 					error?: string;
-					session?: GameSessionResponse;
+					session?: GameSession;
 					gameOver?: boolean;
+					monthStart?: boolean;
+					newMonth?: number | null;
 				};
-
-				if (!response.ok || !data.session) {
-					setError(data.error ?? "Nao foi possivel avancar o dia.");
+				if (!res.ok || !data.session) {
+					setError(data.error ?? "Erro ao avançar.");
 					return null;
 				}
-
 				setSession(data.session);
-				setGameOver(Boolean(data.gameOver));
-				setStressDaysRemaining(nextStressDays);
-				setLogs((currentLogs) => [
-					...currentLogs,
+				setLogs((prev) => [
+					...prev,
 					{
-						day: Number(session.current_day),
-						event_type: eventType,
-						event_title: plan.dayStory || "Rotina diaria",
-						choice_made: choiceMade,
+						day: session.current_day,
+						event_type: params.cardId ? "CARD" : "ROLETA",
+						card_id: params.cardId ?? null,
+						roulette_result: params.rouletteResult,
+						choice_index: params.choiceIndex ?? null,
 					},
 				]);
-
-				if (data.gameOver) {
-					setOvertimeAvailable(false);
-				} else {
-					setOvertimeAvailable(randomOvertimeChance());
-				}
-
 				return {
-					overtimeApplied: resolved.overtimeApplied,
-					motivationFactor: resolved.effectiveFactor,
-					nextStressDays,
-					dayStory: plan.dayStory,
+					session: data.session,
+					gameOver: Boolean(data.gameOver),
+					monthStart: Boolean(data.monthStart),
+					newMonth: data.newMonth ?? null,
 				};
 			} catch {
-				setError("Erro de rede ao avancar o dia.");
+				setError("Erro de rede.");
 				return null;
 			} finally {
 				setIsSubmitting(false);
 			}
 		},
-		[overtimeAvailable, session, stressDaysRemaining],
+		[session],
 	);
 
+	// ── Draw a random card ────────────────────────────────────────────────────
+	const drawCard = useCallback(
+		(
+			category?: "BOM" | "RUIM" | "DECISAO" | "COMPRA_IMPULSIVA",
+		): GameCard | null => {
+			const pool = category
+				? cards.filter((c) => c.category === category)
+				: cards;
+			if (pool.length === 0) return null;
+			return pool[Math.floor(Math.random() * pool.length)] ?? null;
+		},
+		[cards],
+	);
+
+	// Decide whether a turn draws a card (~70% chance)
+	const shouldDrawCard = useCallback(() => Math.random() < 0.7, []);
+
+	// Pick weighted category: 35% BOM, 35% RUIM, 20% DECISAO, 10% COMPRA_IMPULSIVA
+	const pickCategory = useCallback(():
+		| "BOM"
+		| "RUIM"
+		| "DECISAO"
+		| "COMPRA_IMPULSIVA" => {
+		const r = Math.random();
+		if (r < 0.35) return "BOM";
+		if (r < 0.7) return "RUIM";
+		if (r < 0.9) return "DECISAO";
+		return "COMPRA_IMPULSIVA";
+	}, []);
+
 	return {
+		session,
+		logs,
+		cards,
 		isLoading,
 		isSubmitting,
 		error,
+		hasActiveSession,
 		gameOver,
-		hasActiveSession: Boolean(session),
-		header,
-		gameState,
-		motivation,
-		overtimeAvailable,
-		stressDaysRemaining,
-		logs,
+		happinessTint,
+		avatarFace,
 		startNewGame,
+		patchSession,
+		advanceTurn,
+		drawCard,
+		shouldDrawCard,
+		pickCategory,
 		refreshSession,
-		playDailyRoutine,
 	};
 }

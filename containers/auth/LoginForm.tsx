@@ -300,14 +300,52 @@ export function LoginForm() {
 						)}
 
 						{activeTab === "login" && (
-							<div className="mt-6 rounded-md border border-border bg-secondary/50 p-3">
-								<p className="mb-2 text-xs font-medium text-muted-foreground">
-									Contas demo (senha: senha123)
-								</p>
-								<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-									<span>Admin: admin@escola.com</span>
-									<span>Professor: professor@escola.com</span>
-									<span>Aluno: aluno@escola.com</span>
+							<div className="mt-6 space-y-2">
+								{/* Super Admin */}
+								<div className="rounded-md border border-primary/40 bg-primary/5 p-3">
+									<p className="mb-1.5 text-xs font-semibold text-primary">
+										Super Admin — acesso global
+									</p>
+									<button
+										type="button"
+										className="w-full text-left"
+										onClick={() => {
+											setEmail("superadmin@finquest.com.br");
+											setPassword("superadmin123");
+										}}
+									>
+										<div className="flex flex-col gap-0.5 text-xs">
+											<span className="font-medium text-foreground">superadmin@finquest.com.br</span>
+											<span className="text-muted-foreground">senha: superadmin123</span>
+										</div>
+									</button>
+								</div>
+
+								{/* Demais contas */}
+								<div className="rounded-md border border-border bg-secondary/50 p-3">
+									<p className="mb-2 text-xs font-medium text-muted-foreground">
+										Contas demo — senha: senha123
+									</p>
+									<div className="grid grid-cols-1 gap-1.5 text-xs">
+										{[
+											{ label: "Admin (escola)",  email: "carlos.mendes@joaodebarro.edu.br" },
+											{ label: "Professor",        email: "ana.lima@joaodebarro.edu.br" },
+											{ label: "Aluno",            email: "lucas.f@aluno.jb.br" },
+										].map((acc) => (
+											<button
+												key={acc.email}
+												type="button"
+												className="flex items-center justify-between rounded border border-border/50 bg-background px-2 py-1.5 text-left hover:bg-secondary"
+												onClick={() => {
+													setEmail(acc.email);
+													setPassword("senha123");
+												}}
+											>
+												<span className="text-muted-foreground">{acc.label}</span>
+												<span className="font-medium text-foreground">{acc.email}</span>
+											</button>
+										))}
+									</div>
 								</div>
 							</div>
 						)}

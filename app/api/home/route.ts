@@ -56,6 +56,24 @@ export async function GET() {
 			(currentUser.role === "ADMIN" || currentUser.role === "PROFESSOR") &&
 			Boolean(currentUser.school_id);
 
+		// ALUNO: return classrooms they are enrolled in (for ranking links)
+		if (
+			currentUser.role === "ALUNO" &&
+			currentUser.plan_type === "ESCOLAR" &&
+			currentUser.school_id
+		) {
+			classrooms = await sql`
+        SELECT c.id, c.name,
+          COUNT(DISTINCT cs2.user_id)::int AS students_count
+        FROM classroom_students cs
+        INNER JOIN classrooms c ON c.id = cs.classroom_id
+        LEFT JOIN classroom_students cs2 ON cs2.classroom_id = c.id
+        WHERE cs.user_id = ${currentUser.id}
+        GROUP BY c.id, c.name
+        ORDER BY c.name
+      `;
+		}
+
 		if (isSchoolStaff && currentUser.role === "PROFESSOR") {
 			classrooms = await sql`
         SELECT c.id, c.name,

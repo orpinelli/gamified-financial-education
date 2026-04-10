@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 		}
 
 		const users = await sql`
-      SELECT id, email, password_hash, name, role, school_id, plan_type
+      SELECT id, email, password_hash, name, role, school_id, plan_type, active
       FROM users
       WHERE email = ${email.toLowerCase().trim()}
     `;
@@ -60,6 +60,13 @@ export async function POST(request: Request) {
 			return NextResponse.json(
 				{ error: "Email ou senha incorretos" },
 				{ status: 401 },
+			);
+		}
+
+		if (user.active === false) {
+			return NextResponse.json(
+				{ error: "Conta desativada. Entre em contato com o administrador." },
+				{ status: 403 },
 			);
 		}
 

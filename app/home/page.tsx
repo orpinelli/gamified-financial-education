@@ -250,8 +250,41 @@ export default function HomePage() {
 													{classroom.students_count} alunos
 												</p>
 											</div>
+											<div className="flex gap-2">
+												<Button asChild size="sm" variant="outline">
+													<a href={`/turmas/${classroom.id}/ranking`}>Ranking</a>
+												</Button>
+												<Button asChild size="sm" variant="outline">
+													<a href={`/turmas/${classroom.id}`}>Abrir turma</a>
+												</Button>
+											</div>
+										</div>
+									))}
+								</CardContent>
+							</Card>
+						) : null}
+
+						{user.role === "ALUNO" && (data?.classrooms ?? []).length > 0 ? (
+							<Card>
+								<CardHeader>
+									<CardTitle>Minhas turmas</CardTitle>
+								</CardHeader>
+								<CardContent className="space-y-2">
+									{(data?.classrooms ?? []).map((classroom) => (
+										<div
+											key={classroom.id}
+											className="flex items-center justify-between rounded-md border border-border p-3"
+										>
+											<div>
+												<p className="font-medium">{classroom.name}</p>
+												<p className="text-xs text-muted-foreground">
+													{classroom.students_count} alunos
+												</p>
+											</div>
 											<Button asChild size="sm" variant="outline">
-												<a href={`/turmas/${classroom.id}`}>Abrir turma</a>
+												<a href={`/turmas/${classroom.id}/ranking`}>
+													Ver ranking
+												</a>
 											</Button>
 										</div>
 									))}

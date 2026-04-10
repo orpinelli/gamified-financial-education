@@ -9,7 +9,20 @@ export interface User {
 	school_id: number | null;
 	plan_type: PlanType;
 	plan_price: number;
+	active: boolean;
 	created_at: string;
+}
+
+export interface RankingEntry {
+	rank: number;
+	user_id: number;
+	name: string;
+	score: number;
+	current_day: number;
+	money: number;
+	knowledge: number;
+	happiness: number;
+	game_status: "ACTIVE" | "COMPLETED" | null;
 }
 
 export interface SessionUser {

@@ -43,6 +43,14 @@ export async function GET() {
 			return NextResponse.json({ user: null }, { status: 401 });
 		}
 
+		const activeCheck = (await sql`
+      SELECT active FROM users WHERE id = ${payload.id} LIMIT 1
+    `) as Array<{ active: boolean }>;
+
+		if (!activeCheck[0]?.active) {
+			return NextResponse.json({ user: null }, { status: 401 });
+		}
+
 		const normalizedRole = await normalizeRole(
 			payload.id,
 			payload.role,

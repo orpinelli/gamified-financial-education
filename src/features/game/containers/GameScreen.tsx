@@ -1,140 +1,238 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useGameEngine } from "@/src/features/game/hooks/useGameEngine";
-import { INITIAL_PROFESSIONS } from "@/src/features/game/data/professions";
-import { TopBar } from "@/src/features/game/components/TopBar";
-import { GameCalendar } from "@/src/features/game/components/GameCalendar";
-import { PlayerStatusPanel } from "@/src/features/game/components/PlayerStatusPanel";
-import { DailyEventModal } from "../components/DailyEventModal";
-import { GameLayout } from "@/src/features/game/components/GameLayout";
-import { useNotifications } from "@/src/shared/hooks/useNotifications";
-import { NotificationCenter } from "@/src/shared/components/NotificationCenter";
-import { AppHeader } from "@/src/shared/components/AppHeader";
-import { useAuth } from "@/containers/auth/hooks/useAuth";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { DailyRoutinePlan } from "@/src/features/game/hooks/useGameEngine";
+import { useAuth } from "@/containers/auth/hooks/useAuth";
+import { AvatarCreator } from "@/src/features/game/components/AvatarCreator";
+import {
+	CardReveal,
+	type GameCard,
+} from "@/src/features/game/components/CardReveal";
+import {
+	buildFloatingEffects,
+	FloatingEffect,
+	type FloatingEffectItem,
+} from "@/src/features/game/components/FloatingEffect";
+import { GameBoard } from "@/src/features/game/components/GameBoard";
+import {
+	MonthEndSummary,
+	type MonthSummaryData,
+} from "@/src/features/game/components/MonthEndSummary";
+import { MonthlyChoicesModal } from "@/src/features/game/components/MonthlyChoicesModal";
+import { Roulette } from "@/src/features/game/components/Roulette";
+import { TutorialModal } from "@/src/features/game/components/TutorialModal";
+import { useGameEngine } from "@/src/features/game/hooks/useGameEngine";
+import { AppHeader } from "@/src/shared/components/AppHeader";
+import type { PlanType } from "@/types/user";
 
-function parseChoiceSummary(choiceMade: string) {
-	const chunks = choiceMade.split("|").map((item) => item.trim());
-	const read = (prefix: string) =>
-		chunks
-			.find((chunk) => chunk.toUpperCase().startsWith(prefix))
-			?.split(":")[1] ?? "-";
-
-	return {
-		morning: read("MANHA:"),
-		overtime: read("EXTRA:"),
-		evening: read("NOITE:"),
-		stress: read("STRESSGAIN:"),
-	};
-}
+// ─── Turn state machine ───────────────────────────────────────────────────────
+type TurnPhase = "AGUARDANDO_ROLETA" | "CARTA" | "ATUALIZANDO";
 
 export function GameScreen() {
 	const router = useRouter();
 	const { user, isLoading: authLoading, logout, mutate } = useAuth();
-	const characterNameInputId = useId();
-	const professionSelectId = useId();
-	const [characterName, setCharacterName] = useState("Jogador");
-	const [professionId, setProfessionId] = useState(
-		INITIAL_PROFESSIONS[0]?.id ?? "",
-	);
-	const [isEventModalMinimized, setIsEventModalMinimized] = useState(false);
-	const [isTutorialOpen, setIsTutorialOpen] = useState(false);
-	const [selectedPastDay, setSelectedPastDay] = useState<number | null>(null);
-	const tutorialCardRef = useRef<HTMLDivElement | null>(null);
-	const summaryCardRef = useRef<HTMLDivElement | null>(null);
 
 	const {
-		header,
-		gameState,
+		session,
+		logs,
 		isLoading,
 		isSubmitting,
 		error,
-		gameOver,
 		hasActiveSession,
-		logs,
-		motivation,
-		overtimeAvailable,
-		stressDaysRemaining,
+		gameOver,
+		happinessTint,
+		avatarFace,
 		startNewGame,
-		playDailyRoutine,
-	} = useGameEngine({
-		userId: user?.id ?? 0,
-	});
+		patchSession,
+		advanceTurn,
+		drawCard,
+		shouldDrawCard,
+		pickCategory,
+	} = useGameEngine({ userId: user?.id ?? 0 });
 
-	const selectedLog = useMemo(() => {
-		if (selectedPastDay === null) {
-			return null;
-		}
-
-		return logs.find((log) => log.day === selectedPastDay) ?? null;
-	}, [logs, selectedPastDay]);
-
-	const notifications = useNotifications();
-
-	const dateLabel = useMemo(
-		() => `Dia ${header.currentDay}`,
-		[header.currentDay],
+	// ── UI state ──────────────────────────────────────────────────────────────
+	const [phase, setPhase] = useState<TurnPhase>("AGUARDANDO_ROLETA");
+	const [pendingCard, setPendingCard] = useState<GameCard | null>(null);
+	const [pendingRoulette, setPendingRoulette] = useState<number>(1);
+	const [floatingEffects, setFloatingEffects] = useState<FloatingEffectItem[]>(
+		[],
 	);
 
+	// displayDay: character's visual position — driven by animation, synced on session identity change only
+	const [displayDay, setDisplayDay] = useState(1);
+	const [isAnimating, setIsAnimating] = useState(false); // state → triggers re-render → Roulette disabled updates
+	const isAnimatingRef = useRef(false); // ref → safe to read inside async handlers without stale closures
+
+	// Tutorial
+	const [tutorialOpen, setTutorialOpen] = useState(false);
+
+	// Monthly choices modal
+	const [monthlyChoicesOpen, setMonthlyChoicesOpen] = useState(false);
+	const [choicesPendingMonth, setChoicesPendingMonth] = useState(1);
+
+	// Month end summary
+	const [summaryOpen, setSummaryOpen] = useState(false);
+	const [summaryData, setSummaryData] = useState<MonthSummaryData | null>(null);
+
+	// Extract session fields used as effect deps to avoid nested property lint errors
+	const sessionId = session?.id;
+	const sessionDay = session ? Number(session.current_day) : null;
+	const tutorialShown = session?.tutorial_shown ?? false;
+	const hasChoices = Object.keys(session?.monthly_choices ?? {}).length > 0;
+
+	// ── Auth redirect ──────────────────────────────────────────────────────────
 	useEffect(() => {
 		if (!authLoading && !user) {
 			router.replace("/login");
 		}
 	}, [authLoading, router, user]);
 
+	// ── Tutorial: show once after session first created ───────────────────────
 	useEffect(() => {
-		if (gameState) {
-			setIsEventModalMinimized(false);
+		if (session && !session.tutorial_shown) {
+			setTutorialOpen(true);
 		}
-	}, [gameState]);
+	}, [session]);
 
+	// ── Sync displayDay only when session identity changes (load / new game) ──
 	useEffect(() => {
-		if (!isTutorialOpen) {
-			return;
+		if (sessionId != null && sessionDay != null) {
+			setDisplayDay(sessionDay);
 		}
+	}, [sessionId, sessionDay]);
 
-		const onMouseDown = (event: MouseEvent) => {
-			if (!tutorialCardRef.current) {
+	// ── Show monthly choices on day 1 if not yet set (fires after tutorial) ───
+	useEffect(() => {
+		if (!sessionId || sessionDay !== 1 || !tutorialShown || hasChoices) return;
+		setChoicesPendingMonth(1);
+		setMonthlyChoicesOpen(true);
+	}, [sessionId, sessionDay, tutorialShown, hasChoices]);
+
+	// ── Roulette result handler ───────────────────────────────────────────────
+	const handleRouletteResult = useCallback(
+		async (rouletteValue: number) => {
+			if (!session || isAnimatingRef.current) return;
+			setPendingRoulette(rouletteValue);
+
+			// Step-by-step character walk animation (300ms per step)
+			const startDay = Number(session.current_day);
+			isAnimatingRef.current = true;
+			setIsAnimating(true);
+			for (let step = 1; step <= rouletteValue; step++) {
+				await new Promise<void>((r) => setTimeout(r, 300));
+				setDisplayDay(Math.min(startDay + step, 365));
+			}
+			isAnimatingRef.current = false;
+			setIsAnimating(false);
+
+			// Decide if this day has a card event
+			if (shouldDrawCard()) {
+				const category = pickCategory();
+				const card = drawCard(category);
+				if (card) {
+					setPendingCard(card);
+					setPhase("CARTA");
+					return;
+				}
+			}
+
+			// No card — advance directly
+			setPhase("ATUALIZANDO");
+			const result = await advanceTurn({ rouletteResult: rouletteValue });
+			if (!result) {
+				setPhase("AGUARDANDO_ROLETA");
 				return;
 			}
-
-			if (!tutorialCardRef.current.contains(event.target as Node)) {
-				setIsTutorialOpen(false);
-			}
-		};
-
-		document.addEventListener("mousedown", onMouseDown);
-		return () => {
-			document.removeEventListener("mousedown", onMouseDown);
-		};
-	}, [isTutorialOpen]);
-
-	useEffect(() => {
-		if (!selectedLog) {
-			return;
-		}
-
-		const onMouseDown = (event: MouseEvent) => {
-			if (!summaryCardRef.current) {
+			if (result.monthStart && result.newMonth) {
+				setChoicesPendingMonth(result.newMonth);
+				setMonthlyChoicesOpen(true);
+				// Phase stays ATUALIZANDO → roulette disabled until choices confirmed
 				return;
 			}
+			setPhase("AGUARDANDO_ROLETA");
+		},
+		[advanceTurn, drawCard, pickCategory, session, shouldDrawCard],
+	);
 
-			if (!summaryCardRef.current.contains(event.target as Node)) {
-				setSelectedPastDay(null);
+	// ── Card choice handler ───────────────────────────────────────────────────
+	const handleCardChoice = useCallback(
+		(choiceIndex: number | null) => {
+			if (!pendingCard) return;
+			const prevMoney = Number(session?.money ?? 0);
+			const prevHappiness = Number(session?.happiness ?? 0);
+			const prevKnowledge = Number(session?.knowledge ?? 0);
+
+			setPhase("ATUALIZANDO");
+			void advanceTurn({
+				rouletteResult: pendingRoulette,
+				cardId: pendingCard.id,
+				choiceIndex,
+			}).then((result) => {
+				setPendingCard(null);
+				if (!result) {
+					setPhase("AGUARDANDO_ROLETA");
+					return;
+				}
+				// Floating effects
+				const moneyDiff = Number(result.session.money) - prevMoney;
+				const happinessDiff = Number(result.session.happiness) - prevHappiness;
+				const knowledgeDiff = Number(result.session.knowledge) - prevKnowledge;
+				const effects = buildFloatingEffects(
+					moneyDiff,
+					happinessDiff,
+					knowledgeDiff,
+				);
+				if (effects.length > 0) {
+					setFloatingEffects((prev) => [...prev, ...effects]);
+				}
+
+				if (result.monthStart && result.newMonth) {
+					setChoicesPendingMonth(result.newMonth);
+					setMonthlyChoicesOpen(true);
+					// Phase stays ATUALIZANDO → roulette disabled until choices confirmed
+					return;
+				}
+				setPhase("AGUARDANDO_ROLETA");
+			});
+		},
+		[advanceTurn, pendingCard, pendingRoulette, session],
+	);
+
+	// ── Monthly choices confirmed ─────────────────────────────────────────────
+	const handleMonthlyChoices = useCallback(
+		async (choices: Record<string, string>) => {
+			await patchSession({ monthlyChoices: choices });
+			setMonthlyChoicesOpen(false);
+			setPhase("AGUARDANDO_ROLETA");
+
+			// Show end-of-month summary for the month that just ended
+			if (session && choicesPendingMonth > 1) {
+				const prevMonth = choicesPendingMonth - 1;
+				try {
+					const res = await fetch(
+						`/api/game/month-summary?sessionId=${session.id}&month=${prevMonth}`,
+					);
+					const json = (await res.json()) as { summary?: MonthSummaryData };
+					if (res.ok && json.summary) {
+						setSummaryData(json.summary);
+						setSummaryOpen(true);
+					}
+				} catch {
+					// silent
+				}
 			}
-		};
+		},
+		[choicesPendingMonth, patchSession, session],
+	);
 
-		document.addEventListener("mousedown", onMouseDown);
-		return () => {
-			document.removeEventListener("mousedown", onMouseDown);
-		};
-	}, [selectedLog]);
+	// ── Remove floating effect ────────────────────────────────────────────────
+	const removeEffect = useCallback((id: string) => {
+		setFloatingEffects((prev) => prev.filter((e) => e.id !== id));
+	}, []);
 
+	// ── Render guards ─────────────────────────────────────────────────────────
 	if (authLoading || isLoading) {
 		return (
 			<main className="flex min-h-screen items-center justify-center">
@@ -143,285 +241,283 @@ export function GameScreen() {
 		);
 	}
 
-	if (!user) {
-		return null;
-	}
+	if (!user) return null;
 
-	if (!hasActiveSession || !gameState) {
+	const headerProps = {
+		user,
+		onLogout: logout,
+		onPlanUpdated: (planType: PlanType) =>
+			mutate(
+				(current) =>
+					current?.user ? { user: { ...current.user, planType } } : current,
+				false,
+			),
+	};
+
+	// ── No active session — show avatar creator ───────────────────────────────
+	if (!hasActiveSession || !session) {
 		return (
 			<main className="min-h-screen bg-background p-4 text-foreground md:p-6">
 				<div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
-					<AppHeader
-						user={user}
-						onLogout={logout}
-						onPlanUpdated={(planType) =>
-							mutate(
-								(current) =>
-									current?.user
-										? { user: { ...current.user, planType } }
-										: current,
-								false,
-							)
-						}
+					<AppHeader {...headerProps} />
+					{error && (
+						<p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+							{error}
+						</p>
+					)}
+					<AvatarCreator
+						isSubmitting={isSubmitting}
+						onStart={async (config) => {
+							await startNewGame({
+								characterName: config.characterName,
+								avatarHair: config.avatarHair,
+								avatarSkin: config.avatarSkin,
+								avatarOutfit: config.avatarOutfit,
+							});
+						}}
 					/>
-					<Card className="mx-auto w-full max-w-lg">
-						<CardHeader>
-							<CardTitle>Iniciar novo jogo</CardTitle>
-						</CardHeader>
-						<CardContent className="space-y-4">
-							{error ? (
-								<div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">
-									{error}
-								</div>
-							) : null}
-
-							<div className="space-y-2">
-								<label
-									htmlFor={characterNameInputId}
-									className="text-sm font-medium"
-								>
-									Nome do personagem
-								</label>
-								<Input
-									id={characterNameInputId}
-									value={characterName}
-									onChange={(event) => setCharacterName(event.target.value)}
-									placeholder="Digite o nome"
-								/>
-							</div>
-
-							<div className="space-y-2">
-								<label
-									htmlFor={professionSelectId}
-									className="text-sm font-medium"
-								>
-									Profissão
-								</label>
-								<select
-									id={professionSelectId}
-									value={professionId}
-									onChange={(event) => setProfessionId(event.target.value)}
-									className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-								>
-									{INITIAL_PROFESSIONS.map((profession) => (
-										<option key={profession.id} value={profession.id}>
-											{profession.name} · Salário base R${" "}
-											{profession.baseSalary}
-										</option>
-									))}
-								</select>
-							</div>
-
-							<Button
-								disabled={
-									isSubmitting || !characterName.trim() || !professionId
-								}
-								onClick={async () => {
-									const ok = await startNewGame(
-										characterName.trim(),
-										professionId,
-									);
-									if (ok) {
-										notifications.notifySuccess("Jogo iniciado com sucesso.");
-									}
-								}}
-								className="w-full"
-							>
-								{isSubmitting ? "Iniciando..." : "Começar jornada"}
-							</Button>
-						</CardContent>
-					</Card>
 				</div>
 			</main>
 		);
 	}
 
-	return (
-		<>
-			<NotificationCenter
-				items={notifications.items}
-				onDismiss={notifications.remove}
-			/>
-			<Button
-				className="fixed bottom-4 right-4 z-50"
-				variant="outline"
-				onClick={() => setIsTutorialOpen(true)}
-			>
-				Tutorial
-			</Button>
-			{isTutorialOpen ? (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-					<Card
-						ref={tutorialCardRef}
-						className="max-h-[85vh] w-full max-w-2xl overflow-hidden"
-					>
-						<CardHeader className="flex flex-row items-start justify-between gap-3">
-							<CardTitle>Como jogar FinQuest</CardTitle>
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setIsTutorialOpen(false)}
-							>
-								Fechar
-							</Button>
-						</CardHeader>
-						<CardContent className="max-h-[70vh] space-y-4 overflow-y-auto pr-1 text-sm text-muted-foreground">
-							<p>
-								Cada dia é um turno com 3 etapas: manhã, possível hora extra e
-								noite.
-							</p>
-							<ul className="list-disc space-y-1 pl-5">
-								<li>
-									Manhã: escolha entre trabalhar, lazer, faltar ou estudar.
-								</li>
-								<li>
-									Hora extra: pode aparecer quando você trabalha pela manhã.
-								</li>
-								<li>
-									Noite: escolha estudar, lazer ou dormir para fechar o dia.
-								</li>
-							</ul>
-							<p>
-								O desânimo cresce com o passar dos dias. Com motivação baixa,
-								estudo e hora extra rendem menos. Use lazer para recuperar.
-							</p>
-							<p>
-								Objetivo: equilibrar trabalho, estudo, lazer e investimentos
-								para manter progresso sustentável.
-							</p>
-						</CardContent>
-					</Card>
-				</div>
-			) : null}
-			{error ? (
-				<div className="fixed left-4 top-4 z-50 max-w-sm rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-					{error}
-				</div>
-			) : null}
-			{selectedLog ? (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-					<Card ref={summaryCardRef} className="w-full max-w-lg">
-						<CardHeader className="flex flex-row items-start justify-between gap-3">
-							<CardTitle>Resumo do Dia {selectedLog.day}</CardTitle>
-							<Button
-								variant="ghost"
-								size="sm"
-								onClick={() => setSelectedPastDay(null)}
-							>
-								Fechar
-							</Button>
-						</CardHeader>
-						<CardContent className="space-y-3 text-sm">
-							<p className="text-muted-foreground">{selectedLog.event_title}</p>
-							{(() => {
-								const summary = parseChoiceSummary(selectedLog.choice_made);
-								return (
-									<div className="space-y-1 rounded-md border border-border p-3">
-										<p>
-											<strong>Manhã:</strong> {summary.morning}
-										</p>
-										<p>
-											<strong>Hora extra:</strong> {summary.overtime}
-										</p>
-										<p>
-											<strong>Noite:</strong> {summary.evening}
-										</p>
-										<p>
-											<strong>Estresse no dia:</strong>{" "}
-											{summary.stress === "1" ? "Aumentou" : "Estável"}
-										</p>
-									</div>
-								);
-							})()}
-						</CardContent>
-					</Card>
-				</div>
-			) : null}
-			<div className="mx-auto mt-4 w-full max-w-6xl px-4 md:px-6">
-				<AppHeader
-					user={user}
-					onLogout={logout}
-					onPlanUpdated={(planType) =>
-						mutate(
-							(current) =>
-								current?.user
-									? { user: { ...current.user, planType } }
-									: current,
-							false,
-						)
-					}
-				/>
-			</div>
-			<GameLayout
-				top={
-					<TopBar
-						dateLabel={dateLabel}
-						playerName={header.playerName}
-						professionName={header.professionName}
-						money={header.money}
-					/>
-				}
-				center={
-					<GameCalendar
-						day={gameState.day}
-						logs={logs}
-						onSelectPastDay={(dayValue) => setSelectedPastDay(dayValue)}
-					/>
-				}
-				right={<PlayerStatusPanel state={gameState} />}
-				modal={
-					gameOver ? (
-						<div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
-							<Card className="w-full max-w-md">
-								<CardHeader>
-									<CardTitle>Jogo concluído</CardTitle>
-								</CardHeader>
-								<CardContent>
-									<p className="mb-4 text-sm text-muted-foreground">
-										Você chegou ao fim do calendário desta jornada.
-									</p>
-									<Button
-										onClick={() => window.location.reload()}
-										className="w-full"
-									>
-										Iniciar nova jornada
-									</Button>
-								</CardContent>
-							</Card>
+	// ── Game over ─────────────────────────────────────────────────────────────
+	if (gameOver) {
+		const scoreEstimate = Math.round(
+			Number(session.money) / 100 +
+				Number(session.knowledge) * 10 +
+				Number(session.credit_score) / 10,
+		);
+		return (
+			<main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-4">
+				<AppHeader {...headerProps} />
+				<Card className="w-full max-w-md text-center">
+					<CardHeader>
+						<CardTitle className="text-2xl">🎉 Jornada concluída!</CardTitle>
+					</CardHeader>
+					<CardContent className="space-y-4">
+						<p className="text-5xl">{avatarFace}</p>
+						<p className="text-lg font-semibold">{session.character_name}</p>
+						<p className="text-sm text-muted-foreground">
+							Você completou 365 dias de decisões financeiras!
+						</p>
+						<div className="grid grid-cols-2 gap-3 text-sm">
+							<div className="rounded-lg border border-border p-3">
+								<p className="text-xs text-muted-foreground">Saldo final</p>
+								<p className="font-semibold">
+									R${" "}
+									{Number(session.money).toLocaleString("pt-BR", {
+										minimumFractionDigits: 2,
+									})}
+								</p>
+							</div>
+							<div className="rounded-lg border border-border p-3">
+								<p className="text-xs text-muted-foreground">Score estimado</p>
+								<p className="font-semibold text-primary">
+									{scoreEstimate} pts
+								</p>
+							</div>
+							<div className="rounded-lg border border-border p-3">
+								<p className="text-xs text-muted-foreground">Felicidade</p>
+								<p className="font-semibold">{session.happiness}/100 😊</p>
+							</div>
+							<div className="rounded-lg border border-border p-3">
+								<p className="text-xs text-muted-foreground">
+									Score de crédito
+								</p>
+								<p className="font-semibold">{session.credit_score} 💳</p>
+							</div>
 						</div>
-					) : (
-						<DailyEventModal
-							key={gameState.day}
-							day={gameState.day}
-							isSubmitting={isSubmitting}
-							motivationPercent={Math.round(motivation.factor * 100)}
-							overtimeAvailable={overtimeAvailable}
-							stressDaysRemaining={stressDaysRemaining}
-							isMinimized={isEventModalMinimized}
-							onMinimize={() => setIsEventModalMinimized(true)}
-							onRestore={() => setIsEventModalMinimized(false)}
-							onConfirm={async (plan: DailyRoutinePlan) => {
-								const outcome = await playDailyRoutine(plan);
-								if (!outcome) {
-									return;
-								}
+						<Button className="w-full" onClick={() => window.location.reload()}>
+							Nova jornada
+						</Button>
+					</CardContent>
+				</Card>
+			</main>
+		);
+	}
 
-								if (outcome.overtimeApplied) {
-									notifications.notifyInfo("Hora extra concluída neste dia.");
-								}
+	// ── Main game UI ──────────────────────────────────────────────────────────
+	const currentMonth = Math.ceil(Number(session.current_day) / 30);
+	const isRolling = phase === "ATUALIZANDO" || isAnimating;
 
-								notifications.notifySuccess(
-									`Dia finalizado. Rendimento efetivo: ${Math.round(outcome.motivationFactor * 100)}% · Estresse ativo: ${outcome.nextStressDays} dia(s).`,
-								);
+	return (
+		<main
+			className={`min-h-screen p-4 text-foreground transition-colors md:p-6 ${happinessTint} bg-background`}
+		>
+			<FloatingEffect items={floatingEffects} onRemove={removeEffect} />
 
-								if (outcome.dayStory) {
-									notifications.notifyInfo(outcome.dayStory);
-								}
-							}}
-						/>
-					)
-				}
+			{/* Modals */}
+			<TutorialModal
+				open={tutorialOpen}
+				onClose={() => {
+					setTutorialOpen(false);
+					void patchSession({ tutorialShown: true });
+					// If on day 1 with no choices yet, open choices modal now
+					if (session && Number(session.current_day) === 1) {
+						const existing = session.monthly_choices ?? {};
+						if (Object.keys(existing).length === 0) {
+							setChoicesPendingMonth(1);
+							setMonthlyChoicesOpen(true);
+						}
+					}
+				}}
 			/>
-		</>
+
+			<CardReveal card={pendingCard} onChoice={handleCardChoice} />
+
+			<MonthlyChoicesModal
+				open={monthlyChoicesOpen}
+				month={choicesPendingMonth}
+				initialChoices={
+					(session.monthly_choices ?? {}) as Record<string, string>
+				}
+				onConfirm={(choices) => void handleMonthlyChoices(choices)}
+			/>
+
+			<MonthEndSummary
+				open={summaryOpen}
+				data={summaryData}
+				onClose={() => {
+					setSummaryOpen(false);
+					setSummaryData(null);
+				}}
+			/>
+
+			<div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
+				<AppHeader {...headerProps} />
+
+				{error && (
+					<p className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive">
+						{error}
+					</p>
+				)}
+
+				{/* Top bar */}
+				<div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
+					<div className="flex items-center gap-3">
+						<span className="text-3xl">{avatarFace}</span>
+						<div>
+							<p className="font-semibold">{session.character_name}</p>
+							<p className="text-xs text-muted-foreground">
+								Escritório · Salário R$ 2.000/mês
+							</p>
+						</div>
+					</div>
+					<div className="flex flex-wrap gap-4 text-sm">
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">Dia</p>
+							<p className="font-bold text-primary">
+								{session.current_day}/365
+							</p>
+						</div>
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">Mês</p>
+							<p className="font-bold">{currentMonth}</p>
+						</div>
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">Dinheiro</p>
+							<p className="font-bold text-green-600">
+								R${" "}
+								{Number(session.money).toLocaleString("pt-BR", {
+									minimumFractionDigits: 2,
+								})}
+							</p>
+						</div>
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">😊</p>
+							<p className="font-bold">{session.happiness}</p>
+						</div>
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">📚</p>
+							<p className="font-bold">{session.knowledge}</p>
+						</div>
+						<div className="text-center">
+							<p className="text-xs text-muted-foreground">💳</p>
+							<p className="font-bold">{session.credit_score}</p>
+						</div>
+					</div>
+					<Button
+						size="sm"
+						variant="ghost"
+						onClick={() => setTutorialOpen(true)}
+					>
+						Tutorial
+					</Button>
+				</div>
+
+				{/* Board + Roulette layout */}
+				<div className="flex flex-col gap-4 lg:flex-row">
+					{/* Tabuleiro */}
+					<div className="flex-1">
+						<GameBoard
+							currentDay={Number(session.current_day)}
+							displayDay={displayDay}
+							logs={logs}
+							avatarFace={avatarFace}
+						/>
+					</div>
+
+					{/* Status panel */}
+					<div className="flex flex-col gap-4 lg:w-64">
+						<Card>
+							<CardHeader className="pb-2">
+								<CardTitle className="text-sm">Status detalhado</CardTitle>
+							</CardHeader>
+							<CardContent className="space-y-2 text-sm">
+								{[
+									{
+										label: "Felicidade",
+										value: session.happiness,
+										max: 100,
+										color: "bg-yellow-400",
+									},
+									{
+										label: "Conhecimento",
+										value: session.knowledge,
+										max: 100,
+										color: "bg-blue-400",
+									},
+									{
+										label: "Crédito",
+										value: session.credit_score,
+										max: 1000,
+										color: "bg-purple-400",
+									},
+								].map(({ label, value, max, color }) => (
+									<div key={label}>
+										<div className="flex justify-between text-xs text-muted-foreground">
+											<span>{label}</span>
+											<span>
+												{value}/{max}
+											</span>
+										</div>
+										<div className="h-2 overflow-hidden rounded-full bg-muted">
+											<div
+												className={`h-full rounded-full ${color} transition-all duration-500`}
+												style={{ width: `${(Number(value) / max) * 100}%` }}
+											/>
+										</div>
+									</div>
+								))}
+							</CardContent>
+						</Card>
+
+						{/* Roulette */}
+						<Card>
+							<CardHeader className="pb-2">
+								<CardTitle className="text-sm">Sua vez</CardTitle>
+							</CardHeader>
+							<CardContent className="flex justify-center py-2">
+								<Roulette
+									disabled={isRolling || phase === "CARTA" || isSubmitting}
+									onResult={handleRouletteResult}
+								/>
+							</CardContent>
+						</Card>
+					</div>
+				</div>
+			</div>
+		</main>
 	);
 }

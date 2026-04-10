@@ -9,6 +9,7 @@
 		"lint": "eslint .",
 		"db:bootstrap": "node scripts/bootstrap-db.js",
 		"db:seed": "node scripts/seed-passwords.js",
+		"db:seed-demo": "node scripts/seed-demo.js",
 		"db:rls": "node scripts/apply-rls.js",
 		"setup:supabase": "node scripts/setup-supabase.js"
 	},

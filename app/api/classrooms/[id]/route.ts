@@ -23,10 +23,6 @@ export async function GET(
 			return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
 		}
 
-		if (payload.role === "ALUNO") {
-			return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
-		}
-
 		const { id } = await params;
 		const classroomId = Number(id);
 		if (!Number.isFinite(classroomId)) {
@@ -41,12 +37,19 @@ export async function GET(
         WHERE id = ${classroomId} AND school_id = ${payload.schoolId}
       `;
 			allowed = rows.length > 0;
-		} else {
+		} else if (payload.role === "PROFESSOR") {
 			const rows = await sql`
         SELECT c.id
         FROM classrooms c
         INNER JOIN classroom_teachers ct ON ct.classroom_id = c.id
         WHERE c.id = ${classroomId} AND ct.user_id = ${payload.id}
+      `;
+			allowed = rows.length > 0;
+		} else {
+			// ALUNO: only allowed if enrolled in this classroom
+			const rows = await sql`
+        SELECT 1 FROM classroom_students
+        WHERE classroom_id = ${classroomId} AND user_id = ${payload.id}
       `;
 			allowed = rows.length > 0;
 		}
@@ -86,7 +89,13 @@ export async function GET(
       ORDER BY u.name
     `;
 
-		return NextResponse.json({ students });
+		// ALUNO should not see email addresses of classmates
+		const result =
+			payload.role === "ALUNO"
+				? students.map(({ email: _email, ...s }) => s)
+				: students;
+
+		return NextResponse.json({ students: result });
 	} catch (error) {
 		console.error("Classroom detail error:", error);
 		return NextResponse.json(
