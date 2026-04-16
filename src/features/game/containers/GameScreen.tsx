@@ -16,18 +16,21 @@ import {
 	type FloatingEffectItem,
 } from "@/src/features/game/components/FloatingEffect";
 import { GameBoard } from "@/src/features/game/components/GameBoard";
+import { GameLobby } from "@/src/features/game/components/GameLobby";
 import {
 	MonthEndSummary,
 	type MonthSummaryData,
 } from "@/src/features/game/components/MonthEndSummary";
 import { MonthlyChoicesModal } from "@/src/features/game/components/MonthlyChoicesModal";
+import { NewGameConfirmDialog } from "@/src/features/game/components/NewGameConfirmDialog";
 import { Roulette } from "@/src/features/game/components/Roulette";
 import { TutorialModal } from "@/src/features/game/components/TutorialModal";
 import { useGameEngine } from "@/src/features/game/hooks/useGameEngine";
 import { AppHeader } from "@/src/shared/components/AppHeader";
 import type { PlanType } from "@/types/user";
 
-// ─── Turn state machine ───────────────────────────────────────────────────────
+// ─── Screen / Turn state machines ────────────────────────────────────────────
+type UIScreen = "LOBBY" | "AVATAR_CREATOR" | "GAME" | "GAME_OVER";
 type TurnPhase = "AGUARDANDO_ROLETA" | "CARTA" | "ATUALIZANDO";
 
 export function GameScreen() {
@@ -36,11 +39,11 @@ export function GameScreen() {
 
 	const {
 		session,
+		sessions,
 		logs,
 		isLoading,
 		isSubmitting,
 		error,
-		hasActiveSession,
 		gameOver,
 		happinessTint,
 		avatarFace,
@@ -50,9 +53,16 @@ export function GameScreen() {
 		drawCard,
 		shouldDrawCard,
 		pickCategory,
+		loadSession,
+		fetchSessions,
 	} = useGameEngine({ userId: user?.id ?? 0 });
 
-	// ── UI state ──────────────────────────────────────────────────────────────
+	// ── Screen state ──────────────────────────────────────────────────────────
+	const [uiScreen, setUIScreen] = useState<UIScreen>("LOBBY");
+	const [showNewGameConfirm, setShowNewGameConfirm] = useState(false);
+	const [isDeleting, setIsDeleting] = useState(false);
+
+	// ── Turn state ────────────────────────────────────────────────────────────
 	const [phase, setPhase] = useState<TurnPhase>("AGUARDANDO_ROLETA");
 	const [pendingCard, setPendingCard] = useState<GameCard | null>(null);
 	const [pendingRoulette, setPendingRoulette] = useState<number>(1);
@@ -60,10 +70,9 @@ export function GameScreen() {
 		[],
 	);
 
-	// displayDay: character's visual position — driven by animation, synced on session identity change only
 	const [displayDay, setDisplayDay] = useState(1);
-	const [isAnimating, setIsAnimating] = useState(false); // state → triggers re-render → Roulette disabled updates
-	const isAnimatingRef = useRef(false); // ref → safe to read inside async handlers without stale closures
+	const [isAnimating, setIsAnimating] = useState(false);
+	const isAnimatingRef = useRef(false);
 
 	// Tutorial
 	const [tutorialOpen, setTutorialOpen] = useState(false);
@@ -76,7 +85,7 @@ export function GameScreen() {
 	const [summaryOpen, setSummaryOpen] = useState(false);
 	const [summaryData, setSummaryData] = useState<MonthSummaryData | null>(null);
 
-	// Extract session fields used as effect deps to avoid nested property lint errors
+	// Extract session fields used as effect deps
 	const sessionId = session?.id;
 	const sessionDay = session ? Number(session.current_day) : null;
 	const tutorialShown = session?.tutorial_shown ?? false;
@@ -89,26 +98,77 @@ export function GameScreen() {
 		}
 	}, [authLoading, router, user]);
 
+	// ── When game ends while playing, transition to game over screen ───────────
+	useEffect(() => {
+		if (gameOver && uiScreen === "GAME") {
+			setUIScreen("GAME_OVER");
+		}
+	}, [gameOver, uiScreen]);
+
 	// ── Tutorial: show once after session first created ───────────────────────
 	useEffect(() => {
-		if (session && !session.tutorial_shown) {
+		if (session && !session.tutorial_shown && uiScreen === "GAME") {
 			setTutorialOpen(true);
 		}
-	}, [session]);
+	}, [session, uiScreen]);
 
-	// ── Sync displayDay only when session identity changes (load / new game) ──
+	// ── Sync displayDay only when session identity changes ────────────────────
 	useEffect(() => {
 		if (sessionId != null && sessionDay != null) {
 			setDisplayDay(sessionDay);
 		}
 	}, [sessionId, sessionDay]);
 
-	// ── Show monthly choices on day 1 if not yet set (fires after tutorial) ───
+	// ── Show monthly choices on day 1 if not yet set ──────────────────────────
 	useEffect(() => {
 		if (!sessionId || sessionDay !== 1 || !tutorialShown || hasChoices) return;
 		setChoicesPendingMonth(1);
 		setMonthlyChoicesOpen(true);
 	}, [sessionId, sessionDay, tutorialShown, hasChoices]);
+
+	// ── Lobby handlers ────────────────────────────────────────────────────────
+	const handleContinue = useCallback(
+		(id: number) => {
+			void loadSession(id);
+			setPhase("AGUARDANDO_ROLETA");
+			setUIScreen("GAME");
+		},
+		[loadSession],
+	);
+
+	const handleViewResult = useCallback(
+		(id: number) => {
+			void loadSession(id);
+			setUIScreen("GAME_OVER");
+		},
+		[loadSession],
+	);
+
+	const handleNewGameRequest = useCallback(() => {
+		const hasActive = sessions.some((s) => s.status === "ACTIVE");
+		if (hasActive) {
+			setShowNewGameConfirm(true);
+		} else {
+			setUIScreen("AVATAR_CREATOR");
+		}
+	}, [sessions]);
+
+	const handleDeleteSession = useCallback(
+		async (id: number) => {
+			setIsDeleting(true);
+			try {
+				await fetch(`/api/game/sessions/${id}`, { method: "DELETE" });
+				await fetchSessions();
+				// If the deleted session is the currently loaded one, go back to lobby
+				if (session?.id === id) {
+					setUIScreen("LOBBY");
+				}
+			} finally {
+				setIsDeleting(false);
+			}
+		},
+		[fetchSessions, session?.id],
+	);
 
 	// ── Roulette result handler ───────────────────────────────────────────────
 	const handleRouletteResult = useCallback(
@@ -116,7 +176,6 @@ export function GameScreen() {
 			if (!session || isAnimatingRef.current) return;
 			setPendingRoulette(rouletteValue);
 
-			// Step-by-step character walk animation (300ms per step)
 			const startDay = Number(session.current_day);
 			isAnimatingRef.current = true;
 			setIsAnimating(true);
@@ -127,7 +186,6 @@ export function GameScreen() {
 			isAnimatingRef.current = false;
 			setIsAnimating(false);
 
-			// Decide if this day has a card event
 			if (shouldDrawCard()) {
 				const category = pickCategory();
 				const card = drawCard(category);
@@ -138,7 +196,6 @@ export function GameScreen() {
 				}
 			}
 
-			// No card — advance directly
 			setPhase("ATUALIZANDO");
 			const result = await advanceTurn({ rouletteResult: rouletteValue });
 			if (!result) {
@@ -148,7 +205,6 @@ export function GameScreen() {
 			if (result.monthStart && result.newMonth) {
 				setChoicesPendingMonth(result.newMonth);
 				setMonthlyChoicesOpen(true);
-				// Phase stays ATUALIZANDO → roulette disabled until choices confirmed
 				return;
 			}
 			setPhase("AGUARDANDO_ROLETA");
@@ -175,7 +231,6 @@ export function GameScreen() {
 					setPhase("AGUARDANDO_ROLETA");
 					return;
 				}
-				// Floating effects
 				const moneyDiff = Number(result.session.money) - prevMoney;
 				const happinessDiff = Number(result.session.happiness) - prevHappiness;
 				const knowledgeDiff = Number(result.session.knowledge) - prevKnowledge;
@@ -191,7 +246,6 @@ export function GameScreen() {
 				if (result.monthStart && result.newMonth) {
 					setChoicesPendingMonth(result.newMonth);
 					setMonthlyChoicesOpen(true);
-					// Phase stays ATUALIZANDO → roulette disabled until choices confirmed
 					return;
 				}
 				setPhase("AGUARDANDO_ROLETA");
@@ -207,7 +261,6 @@ export function GameScreen() {
 			setMonthlyChoicesOpen(false);
 			setPhase("AGUARDANDO_ROLETA");
 
-			// Show end-of-month summary for the month that just ended
 			if (session && choicesPendingMonth > 1) {
 				const prevMonth = choicesPendingMonth - 1;
 				try {
@@ -254,12 +307,51 @@ export function GameScreen() {
 			),
 	};
 
-	// ── No active session — show avatar creator ───────────────────────────────
-	if (!hasActiveSession || !session) {
+	const activeSession = sessions.find((s) => s.status === "ACTIVE");
+
+	// ── Lobby ─────────────────────────────────────────────────────────────────
+	if (uiScreen === "LOBBY") {
 		return (
 			<main className="min-h-screen bg-background p-4 text-foreground md:p-6">
 				<div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
 					<AppHeader {...headerProps} />
+					{showNewGameConfirm && activeSession && (
+						<NewGameConfirmDialog
+							activeSession={activeSession}
+							onConfirm={() => {
+								setShowNewGameConfirm(false);
+								setUIScreen("AVATAR_CREATOR");
+							}}
+							onCancel={() => setShowNewGameConfirm(false)}
+						/>
+					)}
+					<GameLobby
+						sessions={sessions}
+						isDeleting={isDeleting}
+						onContinue={handleContinue}
+						onViewResult={handleViewResult}
+						onNewGame={handleNewGameRequest}
+						onDelete={(id) => void handleDeleteSession(id)}
+					/>
+				</div>
+			</main>
+		);
+	}
+
+	// ── Avatar creator ────────────────────────────────────────────────────────
+	if (uiScreen === "AVATAR_CREATOR") {
+		return (
+			<main className="min-h-screen bg-background p-4 text-foreground md:p-6">
+				<div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
+					<AppHeader {...headerProps} />
+					<Button
+						variant="ghost"
+						size="sm"
+						className="self-start"
+						onClick={() => setUIScreen("LOBBY")}
+					>
+						← Voltar ao lobby
+					</Button>
 					{error && (
 						<p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
 							{error}
@@ -268,12 +360,17 @@ export function GameScreen() {
 					<AvatarCreator
 						isSubmitting={isSubmitting}
 						onStart={async (config) => {
-							await startNewGame({
+							const ok = await startNewGame({
 								characterName: config.characterName,
 								avatarHair: config.avatarHair,
 								avatarSkin: config.avatarSkin,
 								avatarOutfit: config.avatarOutfit,
 							});
+							if (ok) {
+								await fetchSessions();
+								setPhase("AGUARDANDO_ROLETA");
+								setUIScreen("GAME");
+							}
 						}}
 					/>
 				</div>
@@ -282,12 +379,14 @@ export function GameScreen() {
 	}
 
 	// ── Game over ─────────────────────────────────────────────────────────────
-	if (gameOver) {
-		const scoreEstimate = Math.round(
-			Number(session.money) / 100 +
-				Number(session.knowledge) * 10 +
-				Number(session.credit_score) / 10,
-		);
+	if (uiScreen === "GAME_OVER" || gameOver) {
+		const scoreEstimate = session
+			? Math.round(
+					Number(session.money) / 100 +
+						Number(session.knowledge) * 10 +
+						Number(session.credit_score) / 10,
+				)
+			: 0;
 		return (
 			<main className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-4">
 				<AppHeader {...headerProps} />
@@ -297,16 +396,17 @@ export function GameScreen() {
 					</CardHeader>
 					<CardContent className="space-y-4">
 						<p className="text-5xl">{avatarFace}</p>
-						<p className="text-lg font-semibold">{session.character_name}</p>
+						<p className="text-lg font-semibold">{session?.character_name}</p>
 						<p className="text-sm text-muted-foreground">
-							Você completou 365 dias de decisões financeiras!
+							Você completou {session?.current_day} dias de decisões
+							financeiras!
 						</p>
 						<div className="grid grid-cols-2 gap-3 text-sm">
 							<div className="rounded-lg border border-border p-3">
 								<p className="text-xs text-muted-foreground">Saldo final</p>
 								<p className="font-semibold">
 									R${" "}
-									{Number(session.money).toLocaleString("pt-BR", {
+									{Number(session?.money ?? 0).toLocaleString("pt-BR", {
 										minimumFractionDigits: 2,
 									})}
 								</p>
@@ -319,18 +419,39 @@ export function GameScreen() {
 							</div>
 							<div className="rounded-lg border border-border p-3">
 								<p className="text-xs text-muted-foreground">Felicidade</p>
-								<p className="font-semibold">{session.happiness}/100 😊</p>
+								<p className="font-semibold">
+									{session?.happiness ?? 0}/100 😊
+								</p>
 							</div>
 							<div className="rounded-lg border border-border p-3">
 								<p className="text-xs text-muted-foreground">
 									Score de crédito
 								</p>
-								<p className="font-semibold">{session.credit_score} 💳</p>
+								<p className="font-semibold">{session?.credit_score ?? 0} 💳</p>
 							</div>
 						</div>
-						<Button className="w-full" onClick={() => window.location.reload()}>
-							Nova jornada
-						</Button>
+						<div className="flex gap-2">
+							<Button
+								className="flex-1"
+								variant="outline"
+								onClick={() => {
+									void fetchSessions();
+									setUIScreen("LOBBY");
+								}}
+							>
+								← Voltar ao lobby
+							</Button>
+							<Button
+								className="flex-1"
+								onClick={() => {
+									void fetchSessions();
+									setUIScreen("LOBBY");
+									setTimeout(() => handleNewGameRequest(), 50);
+								}}
+							>
+								Nova jornada
+							</Button>
+						</div>
 					</CardContent>
 				</Card>
 			</main>
@@ -338,6 +459,14 @@ export function GameScreen() {
 	}
 
 	// ── Main game UI ──────────────────────────────────────────────────────────
+	if (!session) {
+		return (
+			<main className="flex min-h-screen items-center justify-center">
+				<p className="text-sm text-muted-foreground">Carregando sessão...</p>
+			</main>
+		);
+	}
+
 	const currentMonth = Math.ceil(Number(session.current_day) / 30);
 	const isRolling = phase === "ATUALIZANDO" || isAnimating;
 
@@ -353,7 +482,6 @@ export function GameScreen() {
 				onClose={() => {
 					setTutorialOpen(false);
 					void patchSession({ tutorialShown: true });
-					// If on day 1 with no choices yet, open choices modal now
 					if (session && Number(session.current_day) === 1) {
 						const existing = session.monthly_choices ?? {};
 						if (Object.keys(existing).length === 0) {
@@ -396,6 +524,17 @@ export function GameScreen() {
 				{/* Top bar */}
 				<div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-3">
 					<div className="flex items-center gap-3">
+						<Button
+							size="sm"
+							variant="ghost"
+							className="px-2 text-muted-foreground"
+							onClick={() => {
+								void fetchSessions();
+								setUIScreen("LOBBY");
+							}}
+						>
+							← Lobby
+						</Button>
 						<span className="text-3xl">{avatarFace}</span>
 						<div>
 							<p className="font-semibold">{session.character_name}</p>

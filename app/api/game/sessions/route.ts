@@ -17,7 +17,9 @@ export async function GET() {
 		}
 
 		const sessions = await sql`
-      SELECT id, character_name, profession_id, current_day, status, updated_at
+      SELECT id, character_name, profession_id, current_day, status,
+             money, happiness, knowledge, credit_score,
+             avatar_hair, avatar_skin, avatar_outfit, updated_at
       FROM game_sessions
       WHERE user_id = ${payload.id}
       ORDER BY updated_at DESC

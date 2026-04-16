@@ -6,8 +6,8 @@ import { sql } from "@/lib/db";
 const PROFESSION_ID = "escritorio";
 const INITIAL_MONEY = 500;
 
-// GET - Retrieve active game session for the current user
-export async function GET() {
+// GET - Retrieve active game session (or a specific session by ?id=N)
+export async function GET(request: Request) {
 	try {
 		const cookieStore = await cookies();
 		const token = cookieStore.get("token")?.value;
@@ -20,22 +20,40 @@ export async function GET() {
 			return NextResponse.json({ error: "Token invalido" }, { status: 401 });
 		}
 
-		const sessions = await sql`
-      SELECT * FROM game_sessions
-      WHERE user_id = ${payload.id} AND status = 'ACTIVE'
-      ORDER BY started_at DESC
-      LIMIT 1
-    `;
+		const { searchParams } = new URL(request.url);
+		const idParam = searchParams.get("id");
 
-		if (sessions.length === 0) {
+		let session: Record<string, unknown> | null = null;
+
+		if (idParam) {
+			const sessionId = parseInt(idParam, 10);
+			if (!Number.isFinite(sessionId)) {
+				return NextResponse.json({ error: "ID invalido" }, { status: 400 });
+			}
+			// Load specific session (any status), ensuring it belongs to the user
+			const rows = await sql`
+        SELECT * FROM game_sessions
+        WHERE id = ${sessionId} AND user_id = ${payload.id}
+        LIMIT 1
+      `;
+			session = (rows[0] as Record<string, unknown>) ?? null;
+		} else {
+			const rows = await sql`
+        SELECT * FROM game_sessions
+        WHERE user_id = ${payload.id} AND status = 'ACTIVE'
+        ORDER BY started_at DESC
+        LIMIT 1
+      `;
+			session = (rows[0] as Record<string, unknown>) ?? null;
+		}
+
+		if (!session) {
 			return NextResponse.json({ session: null });
 		}
 
-		const session = sessions[0];
-
 		const logs = await sql`
       SELECT * FROM game_day_logs
-      WHERE game_session_id = ${session.id}
+      WHERE game_session_id = ${session.id as number}
       ORDER BY day ASC
     `;
 

@@ -7,6 +7,22 @@ import type { GameCard } from "@/src/features/game/components/CardReveal";
 
 export type GameStatus = "ACTIVE" | "COMPLETED";
 
+export interface SessionSummary {
+	id: number;
+	character_name: string;
+	profession_id: string;
+	current_day: number;
+	status: GameStatus;
+	money: number;
+	happiness: number;
+	knowledge: number;
+	credit_score: number;
+	avatar_hair: string;
+	avatar_skin: string;
+	avatar_outfit: string;
+	updated_at: string;
+}
+
 export interface GameSession {
 	id: number;
 	user_id: number;
@@ -48,6 +64,7 @@ interface UseGameEngineParams {
 
 export function useGameEngine({ userId }: UseGameEngineParams) {
 	const [session, setSession] = useState<GameSession | null>(null);
+	const [sessions, setSessions] = useState<SessionSummary[]>([]);
 	const [logs, setLogs] = useState<DayLog[]>([]);
 	const [cards, setCards] = useState<GameCard[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
@@ -74,7 +91,21 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 		return "😞";
 	}, [session?.happiness]);
 
-	// ── Load session ──────────────────────────────────────────────────────────
+	// ── Load sessions list ────────────────────────────────────────────────────
+	const fetchSessions = useCallback(async () => {
+		try {
+			const res = await fetch("/api/game/sessions");
+			const data = (await res.json()) as {
+				error?: string;
+				sessions?: SessionSummary[];
+			};
+			if (res.ok && data.sessions) setSessions(data.sessions);
+		} catch {
+			// silent
+		}
+	}, []);
+
+	// ── Load active session ───────────────────────────────────────────────────
 	const refreshSession = useCallback(async () => {
 		setIsLoading(true);
 		setError("");
@@ -89,6 +120,30 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 				setError(data.error ?? "Erro ao carregar sessão.");
 				setSession(null);
 				setLogs([]);
+				return;
+			}
+			setSession(data.session ?? null);
+			setLogs(data.logs ?? []);
+		} catch {
+			setError("Erro de rede.");
+		} finally {
+			setIsLoading(false);
+		}
+	}, []);
+
+	// ── Load a specific session by ID (any status) ────────────────────────────
+	const loadSession = useCallback(async (id: number) => {
+		setIsLoading(true);
+		setError("");
+		try {
+			const res = await fetch(`/api/game/session?id=${id}`);
+			const data = (await res.json()) as {
+				error?: string;
+				session?: GameSession | null;
+				logs?: DayLog[];
+			};
+			if (!res.ok) {
+				setError(data.error ?? "Erro ao carregar sessão.");
 				return;
 			}
 			setSession(data.session ?? null);
@@ -117,8 +172,9 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 			return;
 		}
 		void refreshSession();
+		void fetchSessions();
 		void loadCards();
-	}, [loadCards, refreshSession, userId]);
+	}, [fetchSessions, loadCards, refreshSession, userId]);
 
 	// ── Start new game ────────────────────────────────────────────────────────
 	const startNewGame = useCallback(
@@ -275,6 +331,7 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 
 	return {
 		session,
+		sessions,
 		logs,
 		cards,
 		isLoading,
@@ -291,5 +348,7 @@ export function useGameEngine({ userId }: UseGameEngineParams) {
 		shouldDrawCard,
 		pickCategory,
 		refreshSession,
+		fetchSessions,
+		loadSession,
 	};
 }
